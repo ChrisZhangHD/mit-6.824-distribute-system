@@ -1,9 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"strings"
+	"encoding/json"
+	"os"
+	"io/ioutil"
+	"fmt"
+	"log"
+	"net/rpc"
+	"hash/fnv"
+)
 
 
 //
@@ -35,8 +41,103 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+	for {
+		var args Args
+		var reply Reply
+
+		ok := call("Coordinator.GetTask", &args, &reply)
+
+		if !ok {
+			os.Exit(1)
+		}
+		if reply.Phase == MapPhase {
+			execMapTask(mapf, reply)
+			args.Index = reply.Index
+			args.Phase = reply.Phase
+			call("Coordinator.CommitTask", &args, &reply)
+		}
+		
+		if (reply.Phase == ReducePhase) {
+			execReduceTask(reducef, reply)
+			args.Index = reply.Index
+			args.Phase = reply.Phase
+			call("Coordinator.CommitTask", &args, &reply)
+		}
+	}
 
 }
+
+func execMapTask(mapf func(string, string) []KeyValue, reply Reply) {
+	fileName := reply.FileNames[0]
+	nReduce := reply.NReduce
+	content, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		log.Fatalf("cannot open %v", fileName)
+		return
+	}
+	kvs := mapf(fileName, string(content))
+	reduces := make([][]KeyValue, nReduce)
+	for _, kv := range kvs {
+		idx := ihash(kv.Key) % nReduce
+		reduces[idx] = append(reduces[idx], kv)
+	}
+	mapTaskIndex := reply.Index
+	for idx, list := range reduces {
+		newFileName := reduceName(mapTaskIndex, idx)
+		f, err := os.Create(newFileName)
+		if err != nil {
+			log.Fatalf("cannot create %v", fileName)
+			return
+		}
+		enc := json.NewEncoder(f)
+		for _, kv := range list {
+			if err := enc.Encode(&kv); err != nil {
+				return
+			}
+		}
+		f.Close()
+	}
+	
+}
+
+func execReduceTask(reducef func(string, []string) string, reply Reply) {
+	maps := make(map[string][]string)
+	for i := 0; i < len(reply.FileNames); i ++ {
+		fileName := reply.FileNames[i]
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", fileName)
+			return
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			if _, ok := maps[kv.Key]; !ok {
+				maps[kv.Key] = make([]string, 0, 100)
+			}
+			maps[kv.Key] = append(maps[kv.Key], kv.Value)
+		}
+		file.Close()
+	}
+	res := make([]string, 0, 100)
+	for k, v := range maps {
+		res = append(res, fmt.Sprintf("%v %v\n", k, reducef(k, v)))
+	}
+	if err := ioutil.WriteFile(mergeName(reply.Index), []byte(strings.Join(res, "")), 0600); err != nil {
+		log.Fatalf("cannot write result")
+		return
+	}
+
+}
+
+func mergeName(reduceIdx int) string {
+	return fmt.Sprintf("mr-out-%d", reduceIdx)
+}
+
+
 
 //
 // example function to show how to make an RPC call to the coordinator.

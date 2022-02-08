@@ -13,6 +13,12 @@ import "strconv"
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
+type TaskPhase int
+
+const (
+	MapPhase TaskPhase = 1
+	ReducePhase TaskPhase  = 2
+)
 
 type ExampleArgs struct {
 	X int
@@ -23,6 +29,17 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type Args struct {
+	Phase TaskPhase
+	Index int
+}
+
+type Reply struct {
+	NReduce int
+	FileNames []string
+	Index int
+	Phase TaskPhase
+}
 
 
 // Cook up a unique-ish UNIX-domain socket name
